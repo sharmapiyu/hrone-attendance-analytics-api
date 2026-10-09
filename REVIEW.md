@@ -1,0 +1,27 @@
+# Starter code review
+
+The assignment describes the starter as a happy-path implementation with defects in helpers and endpoints. The table records the concrete contract failures addressed in the final implementation. Tests named below are in-memory API tests unless a separate MongoDB verification is explicitly mentioned; they do not turn the standard test suite into real-database integration tests.
+
+| # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
+|---|---|---|---|---|
+| 1 | Timestamp models and `epoch_millis_to_datetime` | Coercion or missing range checks can accept strings, floats, seconds, or out-of-range values. | `test_punch_in_timestamp_validation_and_overnight`; `test_timestamp_conversion_and_lateness_boundaries`. | Use strict integer request fields, validate epoch-millisecond range, and store UTC BSON dates at whole-second precision. |
+| 2 | `datetime_to_epoch_millis`, `_utc_whole_seconds` | Naive datetimes, non-UTC values, and subsecond times need consistent boundary handling. | Timestamp conversion and endpoint response assertions cover epoch values. | Normalize to UTC, truncate, and serialize instants as epoch milliseconds. |
+| 3 | `_record_for_api`, `_employee_for_api` | Mongo `_id` is internal; BSON datetimes and missing legacy defaults must not leak into API shapes. | Response tests check epoch values, identity omission, and legacy records. | Remove `_id`, convert instant fields, and supply documented legacy defaults. |
+| 4 | `ist_calendar_date` | Ordinary UTC date handling misassigns punches near IST midnight and overnight shift end. | `test_punch_in_timestamp_validation_and_overnight`. | Derive date in IST and assign pre-shift-end overnight punches to the previous shift-start date. |
+| 5 | `compute_late_minutes` | Incorrect grace comparison or rounding changes the strict 10-minute boundary and reported minutes. | `test_timestamp_conversion_and_lateness_boundaries`. | Apply lateness only after strictly more than 10 minutes; floor whole minutes from shift start. |
+| 6 | `compute_overtime` | An overnight shift ends on the next date; overtime also has a 30-minute minimum and floors minutes. | `test_overtime_boundaries_and_half_up_rounding`; `test_punch_out_overnight_shift_anchor_and_overtime`. | Anchor the shift end correctly, floor elapsed minutes, and apply the threshold. |
+| 7 | `compute_work_hours`, half-day calculation | Float/banker rounding or testing half-day before rounding breaks the 4.50-hour boundary. | `test_punch_out_work_hours_half_day_and_overtime_boundaries`. | Use `Decimal` half-up rounding, then compare the rounded result with 4.50. |
+| 8 | `create_employee`, `ensure_indexes` | Duplicate business codes must return conflict and remain safe under concurrent writes. | `test_employee_validation_and_duplicate`; `test_startup_creates_required_indexes`; local MongoDB index verification. | Create a unique `emp_code` index and map duplicate-key errors to 409. |
+| 9 | `list_employees` | Filtering, deterministic sorting, counting, and pagination must agree on the same query. | `test_employee_response_and_pagination`. | Filter and count in MongoDB, sort by `emp_code`, then apply skip/limit. |
+| 10 | `punch_in` | Unknown employees, overnight attendance dates, and concurrent duplicate punches need contract behavior. | `test_punch_in_timestamp_validation_and_overnight`; `test_concurrent_duplicate_punch_ins`. | Return 404 for unknown employees; calculate IST date and lateness; use the unique `(emp_code, date)` index for race-safe 201/409 behavior. |
+| 11 | `list_attendance` | Employee/date/status filters, total count, sort, and page boundaries must be applied in the database. | `test_attendance_filters_sort_and_pagination`. | Share a query builder with explain; use database filtering/counting/sorting/pagination and supporting indexes. |
+| 12 | Attendance/employee response serializers | Returning storage identity or omitting contract fields/legacy defaults breaks the public schema. | Employee, attendance, and legacy response assertions in `tests/test_phase1.py`. | Project away `_id` and normalize output fields at the API boundary. |
+
+The standard suite uses an in-memory PyMongo test double. It verifies request/response behavior and query construction, not MongoDB's actual locking or query planner. Separate local MongoDB checks were run during development for CRUD/concurrency, analytics, and explain behavior; the 100,000-record explain check used an isolated synthetic database. No production or personal database was used.
+
+### Reviewed and retained behavior
+
+- `emp_code`, not MongoDB `_id`, is the public employee identity; attendance rows are addressed by `(emp_code, date)`, as the data model requires.
+- Weekend attendance rows still contribute to lateness and overtime totals, while weekday-only presence calculations follow R6/R7. Treating weekends as absent from all totals would be incorrect.
+
+The original starter snapshot is not retained in this submission repository, so this review records the defects addressed during implementation and their current regression evidence rather than reproducing a line-by-line before/after diff. Punch-out, PATCH, analytics, and explain were contract-required additions beyond the starter endpoints; they are covered in the later implementation phases, not mislabeled here as starter defects.
